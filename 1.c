@@ -32,25 +32,41 @@ struct threads_sched_result schedule_default(struct threads_sched_args args)
 
 /* MP3 Part 1 - Non-Real-Time Scheduling */
 
+// HRRN
 #ifdef THREAD_SCHEDULER_HRRN
 struct threads_sched_result schedule_hrrn(struct threads_sched_args args)
 {
     struct threads_sched_result r;
-    struct thread *th;
+    struct thread *selected = NULL;
+    struct thread *th = NULL;
 
-    // 找 run_queue 中第一個還沒做完的 thread
+    int best_numerator = -1;
+    int best_denominator = 1;
+
     list_for_each_entry(th, args.run_queue, thread_list) {
-        if (th->remaining_time > 0) {
-            // 找到了，就排它，讓它一次跑完
-            r.scheduled_thread_list_member = &th->thread_list;
-            r.allocated_time = th->remaining_time;
-            return r;
+        int waiting_time = args.current_time - th->arrival_time;
+        int burst = th->processing_time;
+
+        int numerator = waiting_time + burst;
+        int rr_left = numerator * best_denominator;
+        int rr_right = best_numerator * burst;
+
+        if (selected == NULL || rr_left > rr_right ||
+            (rr_left == rr_right && th->ID < selected->ID)) {
+            selected = th;
+            best_numerator = numerator;
+            best_denominator = burst;
         }
     }
 
-    // 如果沒有任何 thread 可以跑（可能全部跑完）
-    r.scheduled_thread_list_member = args.run_queue;
-    r.allocated_time = 1;
+    if (selected) {
+        r.scheduled_thread_list_member = &selected->thread_list;
+        r.allocated_time = selected->remaining_time;
+    } else {
+        r.scheduled_thread_list_member = args.run_queue;
+        r.allocated_time = 1;
+    }
+
     return r;
 }
 #endif
