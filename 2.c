@@ -142,18 +142,59 @@ static struct thread *__check_deadline_miss(struct list_head *run_queue, int cur
 /* Deadline-Monotonic Scheduling */
 static int __dm_thread_cmp(struct thread *a, struct thread *b)
 {
-    //To DO
+    if (!a->is_real_time || !b->is_real_time) {
+        return a->is_real_time ? -1 : (b->is_real_time ? 1 : 0);
+    }
+    if (a->deadline != b->deadline) {
+        return (a->deadline < b->deadline) ? -1 : 1;
+    }
+    return (a->ID < b->ID) ? -1 : 1;
 }
+
 
 struct threads_sched_result schedule_dm(struct threads_sched_args args)
 {
     struct threads_sched_result r;
+    struct thread *th;
+    struct thread *selected = NULL;
+    struct thread *missed = NULL;
 
-    // first check if there is any thread has missed its current deadline
-    // TO DO
+    // 步驟 1：先找有沒有人已經 miss deadline
+    list_for_each_entry(th, args.run_queue, thread_list) {
+        if (th->is_real_time && th->remaining_time > 0 &&
+            args.current_time > th->current_deadline) {
 
-    // handle the case where run queue is empty
-    // TO DO
+            if (missed == NULL || th->ID < missed->ID) {
+                missed = th;
+            }
+        }
+    }
+
+    // 若有人 miss deadline，立刻排他（allocated_time = 0）
+    if (missed) {
+        r.scheduled_thread_list_member = &missed->thread_list;
+        r.allocated_time = 0;
+        return r;
+    }
+
+    // 步驟 2：從 run_queue 中挑選 deadline 最小者（DM）
+    list_for_each_entry(th, args.run_queue, thread_list) {
+        if (th->is_real_time && th->remaining_time > 0) {
+            if (!selected || __dm_thread_cmp(th, selected) < 0) {
+                selected = th;
+            }
+        }
+    }
+
+    // 步驟 3：正常排程執行
+    if (selected) {
+        r.scheduled_thread_list_member = &selected->thread_list;
+        r.allocated_time = selected->remaining_time;  // 一次跑完，不分片
+    } else {
+        // fallback：無 real-time thread 可跑
+        r.scheduled_thread_list_member = NULL;
+        r.allocated_time = 1;
+    }
 
     return r;
 }
