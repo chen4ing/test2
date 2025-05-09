@@ -140,64 +140,102 @@ static struct thread *__check_deadline_miss(struct list_head *run_queue, int cur
 
 #ifdef THREAD_SCHEDULER_DM
 /* Deadline-Monotonic Scheduling */
-static int __dm_thread_cmp(struct thread *a, struct thread *b)
-{
-    if (!a->is_real_time || !b->is_real_time) {
-        return a->is_real_time ? -1 : (b->is_real_time ? 1 : 0);
+static int __dm_thread_cmp(struct thread *a, struct thread *b) {
+    // If one thread is real-time and the other is not, the real-time thread comes first
+    if (a->is_real_time && !b->is_real_time) {
+        return -1;
     }
-    if (a->deadline != b->deadline) {
-        return (a->deadline < b->deadline) ? -1 : 1;
+    if (!a->is_real_time && b->is_real_time) {
+        return 1;
     }
-    return (a->ID < b->ID) ? -1 : 1;
+    // If both are real-time, compare their relative deadlines (smaller deadline = higher priority)
+    if (a->is_real_time && b->is_real_time) {
+        if (a->deadline != b->deadline) {
+            return (a->deadline < b->deadline) ? -1 : 1;
+        }
+    }
+    // For threads with equal deadlines or both non-real-time, break tie by ID (smaller ID = higher priority)
+    if (a->ID != b->ID) {
+        return (a->ID < b->ID) ? -1 : 1;
+    }
+    return 0;
 }
 
-
-struct threads_sched_result schedule_dm(struct threads_sched_args args)
-{
+/* Deadline-Monotonic Scheduling: Scheduler function */
+struct threads_sched_result schedule_dm(struct threads_sched_args args) {
     struct threads_sched_result r;
     struct thread *th;
     struct thread *selected = NULL;
-    struct thread *missed = NULL;
 
-    // 步驟 1：先找有沒有人已經 miss deadline
-    list_for_each_entry(th, args.run_queue, thread_list) {
-        if (th->is_real_time && th->remaining_time > 0 &&
-            args.current_time > th->current_deadline) {
-
-            if (missed == NULL || th->ID < missed->ID) {
-                missed = th;
-            }
-        }
-    }
-
-    // 若有人 miss deadline，立刻排他（allocated_time = 0）
-    if (missed) {
+    // Step 1: Check if any real-time thread has missed its deadline
+    struct thread *missed = __check_deadline_miss(args.run_queue, args.current_time);
+    if (missed && missed->is_real_time && missed->remaining_time > 0) {
+        // Missed deadline: dispatch this thread with 0 time to signal a deadline miss
         r.scheduled_thread_list_member = &missed->thread_list;
         r.allocated_time = 0;
         return r;
     }
 
-    // 步驟 2：從 run_queue 中挑選 deadline 最小者（DM）
+    // Step 2: Find the real-time thread (with remaining execution time) that has the earliest deadline
     list_for_each_entry(th, args.run_queue, thread_list) {
-        if (th->is_real_time && th->remaining_time > 0) {
-            if (!selected || __dm_thread_cmp(th, selected) < 0) {
+        if (th->remaining_time > 0) {
+            if (selected == NULL || __dm_thread_cmp(th, selected) < 0) {
                 selected = th;
             }
         }
     }
 
-    // 步驟 3：正常排程執行
-    if (selected) {
+    // Step 3: Determine scheduling result
+    if (selected != NULL) {
+        // A thread is selected to run
         r.scheduled_thread_list_member = &selected->thread_list;
-        r.allocated_time = selected->remaining_time;  // 一次跑完，不分片
+        if (!list_empty(args.release_queue)) {
+            // Calculate next release time to support preemption at task arrivals
+            int next_release_time = INT_MAX;
+            struct release_queue_entry *entry;
+            list_for_each_entry(entry, args.release_queue, thread_list) {
+                if (entry->release_time < next_release_time) {
+                    next_release_time = entry->release_time;
+                }
+            }
+            if (next_release_time <= args.current_time) {
+                // If a release is due now or overdue, limit to 1 tick to trigger release
+                r.allocated_time = 1;
+            } else {
+                int time_until_next_release = next_release_time - args.current_time;
+                // Allocate only up to the next release time to allow preemption at that tick
+                r.allocated_time = (selected->remaining_time > time_until_next_release) 
+                                     ? time_until_next_release 
+                                     : selected->remaining_time;
+            }
+        } else {
+            // No upcoming releases; allocate all remaining execution time to finish the thread’s current cycle
+            r.allocated_time = selected->remaining_time;
+        }
     } else {
-        // fallback：無 real-time thread 可跑
-        r.scheduled_thread_list_member = NULL;
-        r.allocated_time = 1;
+        // No thread available to run
+        r.scheduled_thread_list_member = args.run_queue;  // Use run_queue sentinel to indicate idle
+        if (!list_empty(args.release_queue)) {
+            // Idle until the next thread release if one is scheduled
+            int next_release_time = INT_MAX;
+            struct release_queue_entry *entry;
+            list_for_each_entry(entry, args.release_queue, thread_list) {
+                if (entry->release_time < next_release_time) {
+                    next_release_time = entry->release_time;
+                }
+            }
+            int sleep_ticks = next_release_time - args.current_time;
+            r.allocated_time = (sleep_ticks > 0) ? sleep_ticks : 1;
+        } else {
+            // No threads at all; idle for 1 tick
+            r.allocated_time = 1;
+        }
     }
 
     return r;
 }
+
+
 #endif
 
 
